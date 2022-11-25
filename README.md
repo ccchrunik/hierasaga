@@ -107,19 +107,20 @@ We define the transaction model as the following to simplify the reasoning proce
 
 ```json
 {
-  transaction_id: TX123456789,
-  start_time: XXX,
-  end_time: YYY,
-  retry_time: 3,
-  ttl: 50,
-  trace_stack: ["Payment:/v1/payment", "Order:/v1/order"],
-  rollback_stack: ["Payment:/v1/payment/rollback", "Order:/v1/order/rollback"],
-  next_stage: "Customer:/v1/customer:1",
-  state: "COMMIT",
-  input: {
+  "transaction_id": TX123456789,
+  "start_time": XXX,
+  "end_time": YYY,
+  "retry_time": 3,
+  "ttl": 50,
+  "trace_stack": ["Payment:/v1/payment", "Order:/v1/order"],
+  "rollback_stack": ["Payment:/v1/payment/rollback", "Order:/v1/order/rollback"],
+  "next_stage": "Customer:/v1/customer:1",
+  "state": "COMMIT",
+  "action": "CHECKPOINT",
+  "input": {
   	...: ...
   },
-  custom_config: {
+  "custom_config": {
   	...: ...
   }
 }
