@@ -190,70 +190,73 @@ There must always be a prepare phase before the start of a transaction. This pha
 
 ![prepare](./img/diagram-prepare.drawio.png)
 
-**Normal Operation:** When a service endpoint receive a request, it first issues a local transaction to store the needed information in the state store. Then it directly sends acknowledgement back to the user. The background thread of the service will periodically pull the state store and send a `BEGIN` event with necessary transaction information (see *Execution Context* in the section *Transaction Model*) to the message queue that can be retrieved by the coordinator.
+**Normal Operation:** When a service endpoint receive a request, it first issues a local transaction to store the needed information in the local database. Then it directly sends acknowledgement back to the user. The background thread of the service will periodically pull the local database and send a `BEGIN` event with necessary transaction information (see *Execution Context* in the section *Transaction Model*) to the message queue that can be retrieved by the executor.
 
-(1), (2) The service issues a transaction to save the necessary information (indexed by transaction ID). Since it leverage the local transaction, it is safe to retry the transaction on failures. In these steps, we just retry the same operation until success. Usually, this kind of operation is implemented either using read-then-insert or directly upsert command.
+(1), (2) The service issues a transaction to save the necessary information (indexed by transaction ID). Since it leverage the local transaction, it is safe to retry the transaction on failures. In these steps, we just retry the same operation until success. Usually, this kind of operation is implemented either using read-then-insert or directly upsert command. We can handle the error message (if the entry exists) and then just return success.
 
-(3) The background thread fetchs all unsent events from the state store, marks them with `BEGIN` state and put them in the message queues. In production, there will be several instances that doing the same things. To prevent race condition, which leads to duplicate messages, we put the deduplication mechanism at the begin phase.
+(3) The background thread fetchs all unsent events from the local database, marks them with `BEGIN` state and put them in the message queues. In production, there will be several instances that doing the same things. To prevent race condition, which leads to duplicate messages, we put the deduplication mechanism at the begin phase.
 
 (4), (5) As each put in the message queue is atomic, just like transactions, we can treat (4), (5) as a whole. Just retry putting the event.
 
 (6) After the event is sent to the message queue, the service marks the state of the transaction as complete. We can implement by directly delete this entry or just marked it as complete. If we implement removing strategy and we receive an error when removing a non-exist entry, we know that this is an duplicate event and can just ignore it. If (6) failed, then it will lead to duplicate events. We leave this problem to *Begin Phase*.
 
-**Example:** After the user pays the order, the third-party service will send a request through the given callback, and it will stop sending until we acknowledge that we have already received it. The service first save all the needed information in the local state store. If something fails during this process, since the service has yet acknowledge to the third-party service, it is safe to retry this operation. 
+**Example:** After the user pays the order, the third-party service will send a request through the given callback, and it will stop sending until we acknowledge that we have already received it. The service first save all the needed information in the local database so that the next time the user request relevant information (like the status of the order), they can see the needed information. If something fails during this process, since the service has yet acknowledge to the third-party service, it is safe to retry this operation. 
 
 
 ### Begin Phase
 
-In this phase, our mission is to deduplicate the same messages and coordinate the conflicting events that require have causality relationships.
+In this phase, our mission is to deduplicate the same messages and coordinate the conflicting events that may have causality relationships.
 
 ![begin](./img/diagram-begin.drawio.png)
 
-**Normal Operation:** The coordinator read an event from the message queue. If the event is a `BEGIN` event, then it create a new entry in the data store (issue a local transaction), examine the causality relationships and get a ticket of execution. The coordinator acknowledge the message.  When in this ticket turn, the data store send an event to the message queue. In terms of duplicate events, if the coordinator finds an entry in the data store (using transaction ID), it removes the event from the message queue. As each opeartion in the data store is atomic, this operation is correct.
+**Normal Operation:** The executor read an event from the message queue. If the event is a `BEGIN` event, then it create a new entry in the transaction manager (issue a transaction). The transaction manager will asynchronously examine the causality relationships and allocate a ticket of execution to that entry. The executor then acknowledges the message. When in this ticket turn, the transaction manager sends an event to the message queue. 
 
-(1) The coordinator pulls an event from the message queue. On failures, just retry.
+(1) The executor pulls an event from the message queue. On failures, just retry.
 
-(2), (3) The coordinator issues a transaction to the central data store. The central data store creates a new entry, resolves the causality relationship, and return the response to the coordinator. If the central store fails, since it implements atomic operation, it is safe to retry. If the coordinator fails or communication link breaks, because our use of transaction, it is also safe.
+(2), (3) The executor issues a transaction to the transaction manager. The transaction manager creates a new entry, asynchronously resolves the causality relationship, and return the response to the executor. If the transaction manager fails, since it implements atomic operation, it is safe to retry. If the executor fails or communication link breaks, because our use of transaction, it is also safe. In terms of duplicate events, if the executor finds an existing entry in the transaction manager (transaction ID, error messages from the transaction manager), it removes the event (by simply acknowledgement) from the message queue. As each opeartion in the transaction manager is atomic, this operation is correct.
 
-(4) The coordinator acknowledge the event and remove it. If failed, the coordinator will know that the entry has been created (transaction ID), it can just retry.
 
-(5), (6) In this transaction turn, the central data store sends an event (`PROCESSING` state) to the message queue. If failed, because the message queue support atomic operation, just retry.
+(4) The executor acknowledges the event and remove it. If this operation fails, by (3), it can just retry.
+
+(5), (6) In the ticket turn, the transaction manager will send an event (`PROCESSING` state) to the message queue. If this fails, because the message queue support atomic operation, it can simply retry.
 
 
 ### Processing Phase
 
 After the *Begin Phase*, the transaction enters a chain of *Processing Phase*. 
 
-**Note:** The *Local Database* here actually means a non-idempotent external service, including a database or a third-party API. We just illustrate it as a database for convenience.
+**Note:** The *Local Database* here may be any non-idempotent external service, including a database or a third-party API. We just illustrate it as a database for convenience.
 
 ![processing](./img/diagram-processing.drawio.png)
 
-**Normal Operation:** The coordinator pull an event from the message queue. If the event is in `PROCESSING` state, then the coordinator sends a request based on the given endpoint. After the virtual service completes the operation, the coordinator first composes a new event and sends it to the message queue and then acknowledge the old one.
+**Normal Operation:** The executor pull an event from the message queue and then issues a transaction to the transaction manager to deduplicate the event (see *Discussion* for more description). If the event is in `PROCESSING` state, then the executor sends a request based on the given endpoint. After the virtual service completes the operation, the executor first composes a new event and sends it to the message queue and then acknowledge the old one.
 
-(1) The coordinator failed to pull an event from the message queue (or failed before (2)). It can just retry. However, we have to deal with the duplicate retry if the change is commited to the database. As we have already coordinate the global transaction to eliminate read/write conflicts, we can include a read check for `TXID` field in the database entry to find whether this is a duplicate transaction or not. See *Discussion* for more description of database schema design.
+(1) The executor failed to pull an event from the message queue (or failed before (2)). It can just retry. 
 
-(2) The communication link failed between coordinator and virtual service before making any permanent change. Like (1), just retry.
+(2), (3) To deal with the duplicate retry, we consult the transaction manager. The transaction manager will only allow a single event for every operation stage. Basically, it uses a 3-tuple (`TXID`, `Stage`, `NONCE`) to deduplicate events. See *Discussion* for detailed reasoning of this method.
 
-(3), (4) Because of the local transaction, the virtual service is safe to retry.
+(4) The communication link failed between executor and virtual service before making any permanent change. Like (1), just retry.
 
-(5) The virutal failed to send the response back to the coordinator due to some failures. As the change is commited, it could either retry the entire operation or rollback. We decide to retry and entire operation and perform deduplication. Please see (1).
+(5), (6) Because of the local transaction, the virtual service is safe to retry.
 
-(6) This situation is similar to (5) because both components are stateless. If the new event is sent but the old one is failed, it doesn't matter as we are safe to retry the request. See (1). Another possibility is that no event had been sent because of failures of the coordinator. In this case, the virtual service has to make event with action `INSPECT`. The coordinator will then look directly at the message queue by querying all the messages by the transaction ID to verify if the stage match the current state. If the stage is matched, meaning no new event had been sent, simply composes a new event and acknowledge the old one. If not match, meaning this event is a duplicate, just ignore it and acknowledge all old events. (If implemented correctly, there will only be 1 old event.)
+(7) The virutal service failed to send the response back to the executor due to some failures. As the change is commited, it could either retry the entire operation or rollback. We decide to retry and entire operation and perform deduplication. Please see (2).
 
-**Note:** the *virtual service* here means a logical unit that has only one local transaction. If an endpoint originally initiates many non-idempotent change, including a local transaction, a non-reversible third-party API, and the like, it should be divided into multiple virtual services. This could be implemented using application framework. See *Simulation* for more description.
+(8) This situation is similar to (7) because both components are stateless. If the new event is sent but the old one is failed, it doesn't matter as we are safe to retry the request. Another possibility is that no event had been sent because of failures of the executor. In both cases, we have to add some additional tags to help deduplicate events. We achieve this by incrementing the `STAGE` and generate a `NONCE` using a random number generator in the message metadata. These fields can help the transaction manager to deduplicate the events. See (2).
+
+**Note:** the *virtual service* here means a logical unit that has only one local transaction. If an endpoint originally initiates many non-idempotent changes, including a local transaction, a non-reversible third-party API, and the like, it should divide them into multiple virtual services. This could be implemented using application framework. See *Simulation* for more description.
 
 ### Commit Phase
 
-The *Commit Phase*  is similar to the *Processing Phase*. The only difference is that when seeing a `COMMIT` state and `CHECKPOINT` action in the metadata (see *Execution Context*), it will release the locks of the central data store (see *Discussion*).
+The *Commit Phase*  is similar to the *Processing Phase*. The only difference is that when seeing a `COMMIT` state and `CHECKPOINT` action in the metadata (see *Execution Context*), it will release the locks of the transaction manager (see *Discussion*).
 
 ![commit](./img/diagram-commit.drawio.png)
 
-**Normal Operation:** The basic operation is the same as the *Processing Phase*. On return, if the state is `COMMIT` and the action is `CHECKPOINT`, the coordinator will clean up the resources before the commit point. This is equivalent to release the lock. The coordinator also composes a new event with the clean state and send the message to the message queue.
+**Normal Operation:** The basic operation is the same as the *Processing Phase*. However, if the state is `COMMIT` and the action is `CHECKPOINT`, the executor will clean up the resources (equivalent to release the lock) before the commit point at the beginning of the **NEXT** stage along with the deduplication process. 
 
 
-(1), (2), (3), (4), (5), (8) See the *Processing Phase*.
+(1), (4), (5), (6), (7), (8) See the *Processing Phase*.
 
-(6), (7) With local transaction, we are safe to retry this operation. Also, the central data store also stores the latest commit point so if the duplicate transaction arrives, it can return an error message so that the coordinator can safely discard this event.
+(2), (3) Beside deduplication process, the transaction manager is informed to clean up the resources before the commit point. With local transaction, we are safe to retry this operation. Also, the transaction manager also stores the latest commit point so if the duplicate transaction arrives, it can return an error message so that the executor can safely discard this event.
 
 **Note:** 
 
@@ -267,17 +270,16 @@ The *Commit Phase*  is similar to the *Processing Phase*. The only difference is
 
 The *Abort Phase* is similar to both *Processing Phase* and *Commit Phase*. If a user issues a request that forces the transaction to stop, then it could abort the transaction and reverses all the change. After rollback operations, the transaction will go to the *End Phase*.
 
-**Note:** The abort operation can happen due to programming error programming errors (like infinite loop) or explicit abort request from the user. The former one is contained in the metadata of each event and the latter one is stored in the central data store. If the coordinator see such abort request in the metadata, it can abort the operation. On the other hand, to improve performance, there is a background thread pulling data from the central data store and store them in the memory to track if some have abort this transaction. The coordinator will also abort this transaction when seeing the flag. See *Discussion* for more explanation.
-
+**Note:** The abort operation can happen due to programming error programming errors (like infinite loop) or explicit abort request from the user. The former one is contained in the metadata of each event and the latter one is stored in the transaction manager. If the executor see such abort flag in the transaction manager, it can abort the operation. 
 ![abort](./img/diagram-abort.drawio.png)
 
-**Normal Operation:** The basic operation is the same as the *Processing Phase*. On return, if the state is `PROCESSING`, the coordinator looks at the cache in the memory to see if this transaction has been aborted. The other case is when the state of the event is set to `ABORT` (from virtual service). Both of the cases make the state of the transaction into `ABORT` and the coordinator changes the metadata of the event. It first pops the top of the `rollback_stack` and set the next stage to the rollback endpoint. On each rollback stage completion, it pops another entry in the stack until the stack is empty. This is just like what the *Processing Phase* does but with the stage endpoint subsituted by the rollback endpoint. When the stack is empty, the coordinator set the state to `END` and enters the *End Phase*.
+**Normal Operation:** The basic operation is the same as the *Processing Phase*. However, if the state is `ABORT`, or the flag is turned on at the beginning of the **NEXT** stage, the executor starts the rollback procedure. It first pops the top of the `rollback_stack` and set the next stage to the rollback endpoint. On each rollback stage completion, it pops another entry in the stack until the stack is empty. This is just like what the *Processing Phase* does but with the stage endpoint subsituted by the rollback endpoint. When the stack is empty, the executor set the state to `END` and enters the *End Phase*.
 
 (1), (2), (3), (4), (5), (7) See the *Processing Phase*.
 
 (6) If the background thread had not updated the status of the event, it fine. It simply waits for the next round. If the checking failed, because this component is stateless, just retry.
 
-**Note:** If the event has been commited, even if the central data store show the as `ABORT`. To explicitly kill the transaction (which is issued by the administrator), the central data store must show the state as `KILLED` rather than `ABORT`.
+**Note:** If the event has been commited, even if the transaction shows the as `ABORT`. To explicitly kill the transaction (which is issued by the administrator), the central data store must show the state as `KILLED` rather than `ABORT`.
 
 ### End Phase
 
