@@ -1,7 +1,13 @@
 package service
 
-type CustomerService struct {
+type CustomerEntry struct {
+	TxID       string
+	CustomerID string
 }
 
 type CustomerDB struct {
+	entries map[string]CustomerEntry
+}
+
+type CustomerService struct {
 }

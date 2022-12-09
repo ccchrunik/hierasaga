@@ -7,14 +7,18 @@ import (
 )
 
 type Report struct {
-	table map[string]*ds.MutexQueue
+	table map[string]ds.Queue
 	mu    sync.Mutex
 }
 
-func NewReport() *Report {
-	return &Report{
-		table: map[string]*ds.MutexQueue{},
+func NewReport(srvs map[string]Service) *Report {
+	r := Report{
+		table: map[string]ds.Queue{},
 	}
+	for srv := range srvs {
+		r.table[srv] = ds.NewMutexArrayQueue()
+	}
+	return &r
 }
 
 func (r *Report) Add(serviceName string, round int, v interface{}) {

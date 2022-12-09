@@ -9,6 +9,30 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
+func TestArrayQueue(t *testing.T) {
+	items := []string{
+		"apple", "orange", "kiwi",
+	}
+
+	aq := ds.NewArrayQueue()
+
+	assert.True(t, aq.IsEmpty())
+	assert.Equal(t, 0, aq.Len())
+
+	for i, item := range items {
+		aq.Push(item)
+		assert.False(t, aq.IsEmpty())
+		assert.Equal(t, i+1, aq.Len())
+	}
+
+	itemsLen := len(items)
+	for i, item := range items {
+		v := aq.Pop()
+		assert.Equal(t, item, v.(string))
+		assert.Equal(t, itemsLen-1-i, aq.Len())
+	}
+}
+
 func TestPriorityQueue(t *testing.T) {
 	items := []*ds.Item{
 		ds.NewItem(1, "apple"),

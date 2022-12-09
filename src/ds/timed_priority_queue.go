@@ -27,7 +27,7 @@ func (tq *TimedQueue) IsEmpty() bool {
 		return true
 	}
 	tq.queue.Push(v)
-	return v.timestamp > *tq.round
+	return v.priority > *tq.round
 }
 
 func (tq *TimedQueue) Len() int {

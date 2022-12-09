@@ -1,4 +1,4 @@
-# Eventual Completion Mechanism for Microservices
+# Hierarchical Saga Transactions
 
 This is the final project of the course 2022 NTUEE Fault-Tolerance Computing. 
 
@@ -13,6 +13,233 @@ This problem is especially serious in some critical system, including e-commerce
 Among the previous methods, all of them focused on data consistency and isolation, in order to avoid the unstable states of distributed systems while executing transactions to be read; however, these methods cannot deal with technical errors, they can only roll back transactions due to business errors, product out of stock, for example. We would like to design a fault tolerant system that can recover the system even in the face of techinal errors including power failures, network partitions, and so on. 
 
 The developer could choose to avoid using global gransactions (GT) but using local transactions (LT) instead to improve concurrency and performance at the cost of data consistency. We simply provide a way to enforce the correctness of distributed transactions. Our purpose mainly focus on fault-tolerance instead of data consistency and isolation. However, we provide a draft of a design to maintain the causality of operations, which is discussed in the last section.
+
+## Code Template
+
+### Types
+
+```go
+type ActionInfo struct {
+	ResourceID string
+}
+
+type EventHeader struct {
+	TxID string
+	TxType string
+	Nonce int
+	WaitGroupID string
+	Service string
+	NextService string
+	Endpoint string
+	Stage string
+	State int
+	Action int
+	ActionInfo ActionInfo
+	CurrentRetryTime int
+	RemainingRetryTime int
+	CallStack []string
+}
+
+type EventBody map[string]interface{}
+
+type Event struct {
+	Header EventHeader
+	Body EventBody
+}
+
+type EventFunc func(e Event) (Event, error)
+
+var StageTable = map[string]map[string]EventFunc
+var EventQueue = Queue{}
+
+
+// client: a random number generator
+func RandGen() int {
+	// generator random number
+	return random_number
+}
+
+// client: an EventFunc
+func XXX(e Event) (Event, error) {
+	tx := NewTransaction("<database>")
+	tx.Start()
+	
+	defer func() {
+		// no effect if already commited
+		tx.Abort()
+	}()
+	
+	// deduplication => key: (TxID, Nonce)
+	if err := tx.Insert("<table>.meta", e.TxID, e.Nonce); err != nil {
+		// just ignore the message
+		// as there is another writer that is manipulating the data
+		return e, err
+	}
+	
+	// tx reads
+		
+	// semantic Locking for writes (cannot perform range locks)
+	// developers can choose whether to require a lock or just blind write
+	if err := tx.Update(
+		"<table>.data", "${NeedLock} && TxID == ${e.TxID} && State != ${StatePending}",
+		data...); err != nil {
+	   // acquire a lock and then retry the transaction
+	   e.Action = ActionLock
+	   e.ActionInfo = ActionInfo{
+	   		ResourceID: "XXX-YYY"
+	   }
+		return e, err
+	}
+	
+	if err := tx.Commit(); err != nil {
+		// retry the transaction
+		return e, err
+	}
+	
+	// call children services
+	events := []Event{}
+	for i := 0; i < k; i++ {
+		events = append(events, getChildEvent(i, e))
+	}
+	
+	var somethingWrong bool
+	var wg sync.WaitGroup
+	wg.Add(k)
+	for _, event := range events {
+		go func() {
+			defer() {
+				wg.Done()
+			}()
+			if err := SendEvent(EventQueue, event) {
+				somethingWrong = true
+			}
+		}()
+	}
+	wg.Wait()
+	
+	if somethingWrong {
+		return e, ErrCallFailed
+	}
+	
+	return e, nil
+}
+
+func getChildEvent(child int, e Event) Event {
+	newEvent := e.Copy()
+	newEvent.SetNonce(RandGen())
+	switch child {
+	case 1:
+		newEvent.Add("key1", value1)
+	
+	case 2:
+		newEvent.Add("key2", value2)
+		
+	...
+	
+	}
+	
+	return newEvent
+}
+
+// client framework
+func EventDispatch(e Event) {
+	stageFunc := StageTable[e.Endpoint][e.Stage]
+	newEvent, err := stageFunc(e)
+	if err != nil {
+		switch err {
+		case ErrUnrecoverable, ErrUnknown:
+			newEvent.State = StateRejected
+		case ErrResourceBusy:
+			// do nothing
+		case ErrCallFailed:
+			// do nothing
+		default:
+			newEvent.CurrentRetryTime++
+			newEvent.RemainingRetryTime--
+			if newEvent.RemainingRetryTime == 0 {
+				newEvent.State = StateRejected
+			}
+		}
+		SendEvent(EventQueue, newEvent)
+		return 
+	}
+	
+	// mark the sub-tree as done
+	if len(CallStack) == 0 {
+		newEvent.State = StateDone
+	}
+	
+	SendEvent(EventQueue, newEvent)
+	return 
+}
+
+// tx manager
+var WaitQueues map[string]PriorityQueue
+
+func ProcessEvent(e Event) {
+	mu.Lock()
+	defer mu.Unlock()
+	
+	switch {
+	// distributed locking
+	case e.Action == ActionLock:
+		if !TxCompleted(e.TxID) {
+			if lease, ok := GetLease(e.ActionInfo.ResourceID]); ok {
+				lease.Add(e)
+			} else {
+				lease := NewLease()
+				lease.SetTime(GetLeaseTime(e))
+				lease.Add(e)
+				lease.Start()
+			}
+		} else {
+			SendEvent(EventQueue, e)
+		}
+		
+		
+	// distributed waitgroup (parent)
+	case e.Action == ActionWait:
+		
+	
+	// distributed waitgroup (children)
+	case e.State == StateDone && e.ParentID:
+	default:
+		
+	}
+}
+
+type Lease struct {
+	queue Queue
+	t Time.Time
+	doneCh <-ch struct{}
+}
+
+func (l *Lease) Add(e) {
+	l.queue.Push(e)
+}
+
+func (l *Lease) Start() {
+	// store to database
+	l.Persist()
+	
+	go func() {
+		for {
+			select {
+			case <-doneCh:
+				break
+			case <-Time.After(l.t):
+				Unblock(k)
+			}
+		}
+		
+	}()
+	return 
+}
+```
+
+### Distributed Waitgroup
+
+
 
 ## Related Work
 
@@ -79,12 +306,12 @@ We define the transaction model as the following to simplify the reasoning proce
 
 - A tree of nodes starts from the root node.
 
-![tree](./img/diagram-tree.drawio.png) 
+![tree](./img/diagram-tree.drawio.png)
 
 - A global transaction can be composed of nonterminal or terminal transaction (local transaction).
 - A nonterminal node can be described as a sequence of terminal nodes
 
-![flatten](./img/diagram-flatten.drawio.png) 
+![flatten](./img/diagram-flatten.drawio.png)
 
 - A terminal node can be described as a tuple of `(Service, Endpoint, Action, Stage, Input, Output, Next Service)`.
     - `(Payment, /v1/payment, retry, 3, input {}, output {}, Order)`

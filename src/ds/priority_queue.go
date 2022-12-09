@@ -6,16 +6,16 @@ import "container/heap"
 
 // An Item is something we manage in a priority queue.
 type Item struct {
-	timestamp int         // The timestamp of the item in the queue.
-	value     interface{} // The value of the item; arbitrary.
+	priority int         // The priority of the item in the queue.
+	value    interface{} // The value of the item; arbitrary.
 	// The index is needed by update and is maintained by the heap.Interface methods.
 	index int // The index of the item in the heap.
 }
 
-func NewItem(timestamp int, value interface{}) *Item {
+func NewItem(priority int, value interface{}) *Item {
 	return &Item{
-		timestamp: timestamp,
-		value:     value,
+		priority: priority,
+		value:    value,
 	}
 }
 
@@ -34,7 +34,7 @@ func (pq PriorityQueueInner) Len() int { return len(pq) }
 
 func (pq PriorityQueueInner) Less(i, j int) bool {
 	// the item with the least timestamp has the highest priority
-	return pq[i].timestamp < pq[j].timestamp
+	return pq[i].priority < pq[j].priority
 }
 
 func (pq PriorityQueueInner) Swap(i, j int) {

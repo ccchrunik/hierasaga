@@ -2,19 +2,20 @@ package service
 
 import (
 	"atm/ds"
+	"fmt"
+	"sync/atomic"
 )
 
 type RoundGateway struct {
 	cfg   *SystemConfig
-	qRecv *ds.MutexQueue
-	qProc *ds.MutexQueue
+	queue *ds.MutexQueue
+	txNum uint64
 }
 
 func NewRoundGateway(cfg *SystemConfig) *RoundGateway {
 	return &RoundGateway{
 		cfg:   cfg,
-		qRecv: ds.NewMutexTimedPriorityQueue(&cfg.round),
-		qProc: ds.NewMutexTimedPriorityQueue(&cfg.round),
+		queue: ds.NewMutexTimedPriorityQueue(&cfg.round),
 	}
 }
 
@@ -22,25 +23,38 @@ func (rgtw *RoundGateway) Name() string {
 	return ServiceGateway
 }
 
-// move requests in the receiving from the previous round to the processing queue and clear the sending queue
-func (rgtw *RoundGateway) Setup() error {
-	rgtw.qRecv.MoveTo(rgtw.qProc)
-	return nil
+func (rgtw *RoundGateway) Send(msg Message, round int) {
+	rgtw.queue.Push(ds.NewItem(round, msg))
 }
 
-func (rgtw *RoundGateway) Send(msg Message) error {
-	rgtw.qRecv.Push(ds.NewItem(rgtw.cfg.round, msg))
-	return nil
-}
-
-func (rgtw *RoundGateway) Execute() error {
+func (rgtw *RoundGateway) Receive() {
 	services := rgtw.cfg.services
-	for i := 0; i < rgtw.qProc.Len(); i++ {
-		msg := rgtw.qProc.Pop().(Message)
-		mq := services[ServiceMessageQueue]
-		if err := mq.Send(msg); err != nil {
-			rgtw.cfg.Log(msg.ServiceFrom, err)
+	mq := services[ServiceMessageQueue]
+	nextRound := rgtw.cfg.round + 1
+	for !rgtw.queue.IsEmpty() {
+		msg := rgtw.queue.Pop().(Message)
+		// uninitialized message
+		if msg.TxID == "" {
+			rgtw.initMessage(&msg)
 		}
+		if msg.RemainingRetryTime == 0 {
+			LogErrorMessage(&msg, ErrTooManyRetries)
+			continue
+		}
+		LogMessage(&msg)
+		mq.Send(msg, nextRound)
 	}
-	return nil
+}
+
+func (rgtw *RoundGateway) initMessage(msg *Message) {
+	msg.TxID = fmt.Sprintf("%d", atomic.AddUint64(&rgtw.txNum, 1))
+	msg.CurrentRetryTime = 0
+	msg.RemainingRetryTime = DefaultRetryTime
+	msg.Service = ServiceGateway
+	msg.NextService = ServiceMessageQueue
+	msg.Stack = append(msg.Stack, ServiceGateway)
+	msg.Phase = PhasePrepare
+	msg.StartRound = rgtw.cfg.round
+	msg.CurrentRound = msg.StartRound
+	msg.MessageType = TypeRequest
 }

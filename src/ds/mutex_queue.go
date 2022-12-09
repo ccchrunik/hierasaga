@@ -16,6 +16,10 @@ func NewMutexQueue(queue Queue) *MutexQueue {
 	}
 }
 
+func NewMutexArrayQueue() *MutexQueue {
+	return NewMutexQueue(NewArrayQueue())
+}
+
 func NewMutexPriorityQueue() *MutexQueue {
 	return NewMutexQueue(NewPriorityQueue())
 }
