@@ -1,36 +1,72 @@
 package service
 
 import (
-	"atm/ds"
 	"fmt"
+	"io"
+	"os"
+	"sort"
 	"sync"
 )
 
 type Report struct {
-	table map[string]ds.Queue
+	table map[string][]string
+	w     io.Writer
 	mu    sync.Mutex
 }
 
-func NewReport(srvs map[string]Service) *Report {
+func NewReport() *Report {
 	r := Report{
-		table: map[string]ds.Queue{},
-	}
-	for srv := range srvs {
-		r.table[srv] = ds.NewMutexArrayQueue()
+		table: map[string][]string{},
+		w:     os.Stdout,
 	}
 	return &r
 }
 
-func (r *Report) Add(serviceName string, round int, v interface{}) {
+func (r *Report) SetWriter(w io.Writer) {
+	r.w = w
+}
+
+func (r *Report) Add(srvName string, round int, v interface{}) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.table[serviceName].Push(fmt.Sprintf("[%d] %s: %v", round, serviceName, v))
+	e := v.(Event)
+	s := fmt.Sprintf("[%06d] (%d) TxID: {%s} %s -> [%s/%s/%d]",
+		round,
+		e.CurrentRetryTime,
+		e.TxID,
+		e.From,
+		e.To,
+		e.Endpoint,
+		e.Stage)
+	// r.table[srvName] = append(r.table[srvName], s)
+	fmt.Println(s)
+}
+
+func (r *Report) Clear(srvName string) {
+	r.table[srvName] = []string{}
+}
+
+func (r *Report) Sort(srvName string) {
+	sort.Slice(r.table[srvName], func(i, j int) bool {
+		return r.table[srvName][i] < r.table[srvName][j]
+	})
+}
+
+func (r *Report) SortAll() {
+	for srvName := range r.table {
+		r.Sort(srvName)
+	}
+}
+
+func (r *Report) ClearAll() {
+	for srvName := range r.table {
+		r.Clear(srvName)
+	}
 }
 
 func (r *Report) Print(serviceName string) {
-	entry := r.table[serviceName]
-	for i := 0; i < entry.Len(); i++ {
-		fmt.Println(entry.Pop())
+	for s := range r.table {
+		fmt.Fprintln(r.w, s)
 	}
 }
 

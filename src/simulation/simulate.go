@@ -2,27 +2,25 @@ package simulation
 
 import (
 	"atm/service"
-	"sync"
 )
 
 const (
-	DefaultRounds = 1000
+	DefaultRounds = 20
 	DefaultSeed   = 42
 )
 
 type Request struct {
-	Msg       service.Message
+	Req       service.Request
 	Timestamp int
 }
 
-func NewInitMessages() []Request {
+func NewInitRequest() []Request {
 	return []Request{
 		{
 			Timestamp: 0,
-			Msg: service.Message{
-				NextService: service.ServiceGateway,
-				Endpoint:    "new_payment",
-				Stage:       1,
+			Req: service.Request{
+				Service:  service.ServicePayment,
+				Endpoint: "payment_control",
 				Body: map[string]interface{}{
 					"OrderID":    "order-1",
 					"CustomerID": "customer-123",
@@ -49,14 +47,21 @@ type SimulationConfig struct {
 	Seed    int            `json:"seed"`
 }
 
+func NewSimulationConfig() *SimulationConfig {
+	return &SimulationConfig{}
+}
+
 type Simulator interface {
 	Simulate(SimulationConfig) error
 }
 
 type RoundSimulator struct {
 	Sys     *service.System
-	SysConf *service.SystemConfig
 	SimConf SimulationConfig
+}
+
+func NewRoundSimultor() *RoundSimulator {
+	return &RoundSimulator{}
 }
 
 func (rs *RoundSimulator) Simulate(simConf SimulationConfig) error {
@@ -66,9 +71,9 @@ func (rs *RoundSimulator) Simulate(simConf SimulationConfig) error {
 		return err
 	}
 
-	gtw := rs.SysConf.GetService(service.ServiceGateway)
-	for _, req := range NewInitMessages() {
-		gtw.Send(req.Msg, req.Timestamp)
+	gtw := rs.Sys.Gateway
+	for _, req := range NewInitRequest() {
+		gtw.Send(req.Req, req.Timestamp)
 	}
 
 	for r := 0; r < rs.SimConf.Rounds; r++ {
@@ -81,9 +86,10 @@ func (rs *RoundSimulator) Simulate(simConf SimulationConfig) error {
 }
 
 func (rs *RoundSimulator) init(sys *service.System, simConf SimulationConfig) error {
-	if err := simConf.Pattern.Init(); err != nil {
-		return err
-	}
+	// TODO:
+	// if err := simConf.Pattern.Init(); err != nil {
+	// 	return err
+	// }
 	if simConf.Rounds == 0 {
 		simConf.Rounds = DefaultRounds
 	}
@@ -93,30 +99,36 @@ func (rs *RoundSimulator) init(sys *service.System, simConf SimulationConfig) er
 
 	rs.Sys = sys
 	rs.SimConf = simConf
-
-	cfg := service.NewSystemConfig(sys.Services)
-	rs.SysConf = cfg
 	return nil
 }
 
 func (rs *RoundSimulator) run() error {
-	round := rs.SysConf.Advance()
+	// round := rs.Sys.Advance()
 
+	// fmt.Printf("round: %d\n", rs.Sys.Round())
+	// for _, srv := range rs.Sys.Services {
+	// 	srvName := srv.Name()
+	// 	failureType, _ := rs.SimConf.Pattern.Get(srvName, round)
+	// 	rs.Sys.SetFailure(srvName, failureType)
+	// }
+
+	rs.Sys.Gateway.Receive()
+
+	// var wg sync.WaitGroup
+	// for _, srv := range rs.Sys.Services {
+	// 	wg.Add(1)
+	// 	go func(srv service.Service) {
+	// 		defer wg.Done()
+	// 		srv.Receive()
+	// 	}(srv)
+	// }
+	// wg.Done()
 	for _, srv := range rs.Sys.Services {
-		srvName := srv.Name()
-		failureType, _ := rs.SimConf.Pattern.Get(srvName, round)
-		rs.SysConf.SetFailure(srvName, failureType)
+		srv.Receive()
 	}
 
-	var wg sync.WaitGroup
-	for _, srv := range rs.Sys.Services {
-		wg.Add(1)
-		go func(srv service.Service) {
-			defer wg.Done()
-			srv.Receive()
-		}(srv)
-	}
-	wg.Done()
+	rs.Sys.PrintResult()
+	rs.Sys.Advance()
 
 	return nil
 }

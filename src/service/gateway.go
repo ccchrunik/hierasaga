@@ -7,15 +7,15 @@ import (
 )
 
 type RoundGateway struct {
-	cfg   *SystemConfig
+	sys   *System
 	queue *ds.MutexQueue
 	txNum uint64
 }
 
-func NewRoundGateway(cfg *SystemConfig) *RoundGateway {
+func NewRoundGateway(sys *System) *RoundGateway {
 	return &RoundGateway{
-		cfg:   cfg,
-		queue: ds.NewMutexTimedPriorityQueue(&cfg.round),
+		sys:   sys,
+		queue: ds.NewMutexTimedPriorityQueue(&sys.Cfg.round),
 	}
 }
 
@@ -23,38 +23,33 @@ func (rgtw *RoundGateway) Name() string {
 	return ServiceGateway
 }
 
-func (rgtw *RoundGateway) Send(msg Message, round int) {
-	rgtw.queue.Push(ds.NewItem(round, msg))
+func (rgtw *RoundGateway) Send(req Request, round int) {
+	rgtw.queue.Push(ds.NewItem(round, req))
 }
 
+// gateway is always available
 func (rgtw *RoundGateway) Receive() {
-	services := rgtw.cfg.services
-	mq := services[ServiceMessageQueue]
-	nextRound := rgtw.cfg.round + 1
+	eq := rgtw.sys.EventQueue
 	for !rgtw.queue.IsEmpty() {
-		msg := rgtw.queue.Pop().(Message)
-		// uninitialized message
-		if msg.TxID == "" {
-			rgtw.initMessage(&msg)
+		item := rgtw.queue.Pop().(*ds.Item)
+		req := item.Value().(Request)
+		e := rgtw.initEvent(req)
+		if e.TxID == "" {
+			e.TxID = fmt.Sprintf("tx-%d", atomic.AddUint64(&rgtw.txNum, 1))
 		}
-		if msg.RemainingRetryTime == 0 {
-			LogErrorMessage(&msg, ErrTooManyRetries)
-			continue
-		}
-		LogMessage(&msg)
-		mq.Send(msg, nextRound)
+		eq.Send(e)
 	}
 }
 
-func (rgtw *RoundGateway) initMessage(msg *Message) {
-	msg.TxID = fmt.Sprintf("%d", atomic.AddUint64(&rgtw.txNum, 1))
-	msg.CurrentRetryTime = 0
-	msg.RemainingRetryTime = DefaultRetryTime
-	msg.Service = ServiceGateway
-	msg.NextService = ServiceMessageQueue
-	msg.Stack = append(msg.Stack, ServiceGateway)
-	msg.Phase = PhasePrepare
-	msg.StartRound = rgtw.cfg.round
-	msg.CurrentRound = msg.StartRound
-	msg.MessageType = TypeRequest
+func (rgtw *RoundGateway) initEvent(req Request) Event {
+	e := NewEvent()
+	e.TxID = req.TxID
+	e.From = ServiceGateway
+	e.To = ServiceTxManager
+	e.PushCallStack(req.Service, req.Endpoint, 0)
+	e.CurrentRetryTime = 0
+	e.RemainingRetryTime = DefaultRetryTime
+	e.Round = rgtw.sys.Round() + 1
+	e.Phase = PhaseBegin
+	return e
 }

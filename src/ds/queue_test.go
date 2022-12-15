@@ -42,7 +42,7 @@ func TestPriorityQueue(t *testing.T) {
 		ds.NewItem(7, "lemon"),
 	}
 
-	pq := ds.NewMutexPriorityQueue()
+	pq := ds.NewPriorityQueue()
 
 	for _, item := range items {
 		pq.Push(item)

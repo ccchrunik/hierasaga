@@ -1,6 +1,7 @@
 package ds
 
 import (
+	"errors"
 	"sync"
 )
 
@@ -61,6 +62,9 @@ func (mq *MutexQueue) Push(v interface{}) {
 func (mq *MutexQueue) Pop() interface{} {
 	mq.mu.Lock()
 	defer mq.mu.Unlock()
+	if mq.queue.IsEmpty() {
+		return errors.New("empty queue")
+	}
 	return mq.queue.Pop()
 }
 
