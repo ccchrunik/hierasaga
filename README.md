@@ -389,7 +389,7 @@ There are 3 types of errors:
   - We are able to distinguish these two conditions because network partition usually result in timeout error rather than not-found error. We mainly deal with this type of error in our system.
 - Logical Error:
   - The most notable error in this category is programming bugs like infinite loop.
-  - This type of error is only mentioned a little bit during out discussion.
+  - This type of error is only mentioned a little bit during our discussion.
 
 ### Basic Unit
 
