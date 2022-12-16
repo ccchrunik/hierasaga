@@ -2,257 +2,160 @@
 
 This is the final project of the course 2022 NTUEE Fault-Tolerance Computing. 
 
-**Note:** We write a simulator in Go to simulated distributed services because of the short duration of a semester. We envision a realistic architecture using containers and Kubernetes for deployment.
+**Note:** We write a simulator in Go to simulate distributed services because of the short duration of a semester. We envision a realistic architecture using containers and Kubernetes for deployment.
 
 ## Introduction
 
-Our goal is to apply fault tolerance to must-complete distributed transactions in the microservice architecture. As software systems become increasingly complex, many of them turn toward distributed architecture. With the help of virtualization and containerization, microservice architecture is adopted by many systems. In microservices, data are partitioned into several business domains to form a loosely-coupled architecture that can be updated and deployed independently. This also increases the modularity of the entire system, leading to less maintainence effort and faster deployment speed. Although most operations can be done within the same business domain, it is hard to perform traditional ACID transactions because of the possibility of network partition as data become distributed across several databases. The distributed nature results in uncertain behavior of a transaction.
+We aim to apply fault tolerance to must-complete distributed transactions in the microservice architecture. As software systems become increasingly complex, many turn toward distributed architecture. With the help of virtualization and containerization, microservices architecture is adopted by many systems. In microservices, data are partitioned into several business domains to form a loosely-coupled architecture that can be updated and deployed independently. This also increases the modularity of the entire system, leading to less maintenance effort and faster deployment speed. Although most operations can be done within the same business domain, it is hard to perform traditional ACID transactions because of the possibility of network partition as data become distributed across several databases. The distributed nature results in uncertain behavior of a transaction.
 
-This problem is especially serious in some critical system, including e-commerce websites. For example, if a customer had already complete a payment process while the system encounter a failure before this payment is persisted and the record is completely lost, it could lead to severe damage to customer relationship. As more and more third-party service integration is used in today's websites, this problem could happen more frequently because most of them are not idempotent. To prevent this type of problems, it is crucial to design a fault-tolerance mechanism to deal with this situation.
+This problem is severe in some critical systems, including e-commerce websites. For example, suppose a customer has already completed a payment process while the system encounters a failure before this payment is persisted and the record is completely lost. In that case, it could lead to severe damage to customer relationships. As more and more third-party service integration is used in today's websites, this problem could happen more frequently because most are not idempotent. To prevent this type of problem, it is crucial to design a fault-tolerance mechanism to deal with this situation.
 
-Among the previous methods, all of them focused on data consistency and isolation, in order to avoid the unstable states of distributed systems while executing transactions to be read; however, these methods cannot deal with technical errors, they can only roll back transactions due to business errors, product out of stock, for example. We would like to design a fault tolerant system that can recover the system even in the face of techinal errors including power failures, network partitions, and so on. 
+To solve this problem, people turn to Long-Lived Transactions (TTL) or **Saga**, in the microservice term. This type of transaction is assumed to be lived longer than standard transactions and thus relax some classic ACID transaction constraints. The developer avoids using global transactions (GT) but uses local transactions (LT) instead to improve concurrency and performance at the cost of data consistency. 
 
-The developer could choose to avoid using global gransactions (GT) but using local transactions (LT) instead to improve concurrency and performance at the cost of data consistency. We simply provide a way to enforce the correctness of distributed transactions. Our purpose mainly focus on fault-tolerance instead of data consistency and isolation. However, we provide a draft of a design to maintain the causality of operations, which is discussed in the last section.
+Among the previous works, the Saga can only deal with flat transactions. However, there may be the need to extend these constraints to support hierarchical transactions to make them more flexible in a more complex environment. In this project, we design a mechanism that can be used to achieve hierarchical saga transactions, and we also write a simple simulation program to demonstrate the behavior.
 
-## Code Template
+**Our Contribution:**
 
-### Types
-
-```go
-type ActionInfo struct {
-	ResourceID string
-}
-
-type EventHeader struct {
-	TxID string
-	TxType string
-	Nonce int
-	WaitGroupID string
-	Service string
-	NextService string
-	Endpoint string
-	Stage string
-	State int
-	Action int
-	ActionInfo ActionInfo
-	CurrentRetryTime int
-	RemainingRetryTime int
-	CallStack []string
-}
-
-type EventBody map[string]interface{}
-
-type Event struct {
-	Header EventHeader
-	Body EventBody
-}
-
-type EventFunc func(e Event) (Event, error)
-
-var StageTable = map[string]map[string]EventFunc
-var EventQueue = Queue{}
-
-
-// client: a random number generator
-func RandGen() int {
-	// generator random number
-	return random_number
-}
-
-// client: an EventFunc
-func XXX(e Event) (Event, error) {
-	tx := NewTransaction("<database>")
-	tx.Start()
-	
-	defer func() {
-		// no effect if already commited
-		tx.Abort()
-	}()
-	
-	// deduplication => key: (TxID, Nonce)
-	if err := tx.Insert("<table>.meta", e.TxID, e.Nonce); err != nil {
-		// just ignore the message
-		// as there is another writer that is manipulating the data
-		return e, err
-	}
-	
-	// tx reads
-		
-	// semantic Locking for writes (cannot perform range locks)
-	// developers can choose whether to require a lock or just blind write
-	if err := tx.Update(
-		"<table>.data", "${NeedLock} && TxID == ${e.TxID} && State != ${StatePending}",
-		data...); err != nil {
-	   // acquire a lock and then retry the transaction
-	   e.Action = ActionLock
-	   e.ActionInfo = ActionInfo{
-	   		ResourceID: "XXX-YYY"
-	   }
-		return e, err
-	}
-	
-	if err := tx.Commit(); err != nil {
-		// retry the transaction
-		return e, err
-	}
-	
-	// call children services
-	events := []Event{}
-	for i := 0; i < k; i++ {
-		events = append(events, getChildEvent(i, e))
-	}
-	
-	var somethingWrong bool
-	var wg sync.WaitGroup
-	wg.Add(k)
-	for _, event := range events {
-		go func() {
-			defer() {
-				wg.Done()
-			}()
-			if err := SendEvent(EventQueue, event) {
-				somethingWrong = true
-			}
-		}()
-	}
-	wg.Wait()
-	
-	if somethingWrong {
-		return e, ErrCallFailed
-	}
-	
-	return e, nil
-}
-
-func getChildEvent(child int, e Event) Event {
-	newEvent := e.Copy()
-	newEvent.SetNonce(RandGen())
-	switch child {
-	case 1:
-		newEvent.Add("key1", value1)
-	
-	case 2:
-		newEvent.Add("key2", value2)
-		
-	...
-	
-	}
-	
-	return newEvent
-}
-
-// client framework
-func EventDispatch(e Event) {
-	stageFunc := StageTable[e.Endpoint][e.Stage]
-	newEvent, err := stageFunc(e)
-	if err != nil {
-		switch err {
-		case ErrUnrecoverable, ErrUnknown:
-			newEvent.State = StateRejected
-		case ErrResourceBusy:
-			// do nothing
-		case ErrCallFailed:
-			// do nothing
-		default:
-			newEvent.CurrentRetryTime++
-			newEvent.RemainingRetryTime--
-			if newEvent.RemainingRetryTime == 0 {
-				newEvent.State = StateRejected
-			}
-		}
-		SendEvent(EventQueue, newEvent)
-		return 
-	}
-	
-	// mark the sub-tree as done
-	if len(CallStack) == 0 {
-		newEvent.State = StateDone
-	}
-	
-	SendEvent(EventQueue, newEvent)
-	return 
-}
-
-// tx manager
-var WaitQueues map[string]PriorityQueue
-
-func ProcessEvent(e Event) {
-	mu.Lock()
-	defer mu.Unlock()
-	
-	switch {
-	// distributed locking
-	case e.Action == ActionLock:
-		if !TxCompleted(e.TxID) {
-			if lease, ok := GetLease(e.ActionInfo.ResourceID]); ok {
-				lease.Add(e)
-			} else {
-				lease := NewLease()
-				lease.SetTime(GetLeaseTime(e))
-				lease.Add(e)
-				lease.Start()
-			}
-		} else {
-			SendEvent(EventQueue, e)
-		}
-		
-		
-	// distributed waitgroup (parent)
-	case e.Action == ActionWait:
-		
-	
-	// distributed waitgroup (children)
-	case e.State == StateDone && e.ParentID:
-	default:
-		
-	}
-}
-
-type Lease struct {
-	queue Queue
-	t Time.Time
-	doneCh <-ch struct{}
-}
-
-func (l *Lease) Add(e) {
-	l.queue.Push(e)
-}
-
-func (l *Lease) Start() {
-	// store to database
-	l.Persist()
-	
-	go func() {
-		for {
-			select {
-			case <-doneCh:
-				break
-			case <-Time.After(l.t):
-				Unblock(k)
-			}
-		}
-		
-	}()
-	return 
-}
-```
-
-### Distributed Waitgroup
-
+- We design a hierarchical saga transaction mechanism based on event-driven microservice architecture by introducing the concept of control endpoints and a transaction manager.
+- We improve the transactional messaging pattern by introducing an additional tag to prevent collision between duplicate events.
 
 
 ## Related Work
 
 - [SagaMAS: A Software Framework for Distributed Transactions in the Microservice Architecture](https://ieeexplore.ieee.org/abstract/document/8645853)
-    - Provides a good formalized transaction model
-    - Use agent at each service to handle distributed transactions (semi-orchestrated)
 - [Enhancing Saga Pattern for Distributed Transactions within a Microservices Architecture](https://www.mdpi.com/2076-3417/12/12/6242)
-    - Data Isolation using quota queue and commit-sync service
 - [Limits of Saga Pattern](https://www.ufried.com/blog/limits_of_saga_pattern/#fnref:2)
-    - Only handle business error, not techinal error
 - [Application-Level Locking](https://stackoverflow.com/questions/5436021/implementing-application-level-locking)
 - [2PC*: a distributed transaction concurrency control protocol of multi-microservice based on cloud computing platform](https://link.springer.com/content/pdf/10.1186/s13677-020-00183-w.pdf) 
 - [Event-based data-centric semantics for consistent data management in microservices](https://dl.acm.org/doi/abs/10.1145/3524860.3539807?casa_token=101CsEviepkAAAAA:ZJb00U-bd7XInIMk9O6-pyS8UHveeJAAaEroeWHedRF2l0UJAXyVcJvkKgmLNiPoFmFBV5Nqi60dXQM)
+
+## Fault Tolerance Design
+
+In this section, we will discuss a mechanism step-by-step to construct a hierarchical saga transaction.
+
+### Fault Model
+
+Our fault model mainly deals with the faults from the environments of the interactions between components. The logic error of the execution flaws is not considered. This type of error needs to be addressed by the developer or through verification processes like testing.
+
+There are three types of errors:
+
+- **Business Error:**
+  - This type of error is valid from the viewpoint of our systems. It can be viewed as a non-error transaction with the business rollback stage. We omit further discussion by treating it as a special case of technical error.
+- **Technical Error:**
+  - Service Failure: the service is temporarily shut down or crashed.
+  - Network Partition: the network connection failed when communicating with another component.
+  - We can distinguish these two conditions because network partition usually results in a timeout error rather than a not-found error. We mainly deal with this type of error in our system.
+- **Logical Error:**
+  - The most notable error in this category is programming bugs like an infinite loop.
+  - This type of error is only mentioned a little bit during our discussion.
+
+With our use of an event-driven system, we can eliminate many common errors in a synchronous system. However, we have to deal with another complexity, that is, sending the event to the event queue. Through observation, we can mask the failures by using variants of retry to achieve *exactly-once processing*. But before we dive deeper into resolving this issue, we first look at the properties of the basic building block in an event-driven system.
+
+### Basic Unit
+
+We can decompose the operation sequence into basic units of source and processor. There are four possibilities that the basic unit can fail.
+
+![basic](./img/diagram-basic.drawio.png)
+
+**Normal Operation:** The processor pulls an event from the source and processes it. After completing the processing, send a new event and acknowledge the old one.
+
+(1) The processor fails to pull an event from the source. Because nothing has happened, we can retry.
+
+(2) The processor failed in the processing of the event. It is the developers' responsibility to deal with this situation by using some form of transaction.
+
+(3), (4) While the event has been processed, it fails to send the new event or acknowledge the old one. Because the processor is stateless, we can do nothing but retry. However, this could lead to duplicate messages. We handle this situation in the next section *Transactional Messaging*.
+
+In an event-driven system, the basic unit is the only source of failure. We can achieve a high degree of fault tolerance by dealing with all failures in the basic unit.
+
+### Transactional Messaging 
+
+Transactional messaging treats updating DB and sending an event as a whole as if it were a transaction. There are three types:
+
+- Polling: Let the system periodically pull the modifying entry and put them in the event queue.
+- Change Data Capture: Like polling, but using additional components that pull the database's log. Ex: Kafka Connect
+- Blind Retry: This does nothing but design the service as an idempotent component, so retries are not a problem.
+
+The first solution is easy to implement but inefficient. The second solution has high performance but only supports some kinds of applications. The third one is the most general but also the hardest to handle to achieve idempotency. We will discuss how to improve the third solution later.
+
+**Change Data Capture (CDC):**
+
+Although we discuss three possible solutions, the first two can be thought of as the same approach. While the polling solution is based on fixed-time querying, the CDC approach is driven by interrupts.
+
+Normal Operation: The service issues a transaction and then sends an acknowledgment of the old event.
+
+(1) If (1) fails, we can retry.
+
+(2) As we use transactions, the service knows that this event has been processed and can safely ignore it.
+
+The CDC component does the delivery of the new event. Nevertheless, the CDC may also fail and send duplicate events. Fortunately, with the help of specialized `DB Schema`, we can solve the problem.
+
+![tx-msg](./img/diagram-tx-msg.drawio.png)
+
+**Blind Retry:**
+
+Although CDC is a great technology, many applications can not use this approach because of a lack of support from the database. Those applications can only use blind retries to deal with technical errors. In most situations, it suffices. Nevertheless, when a transaction encounters successive failures in the flow of the transaction, it could lead to an exponential growth of the duplicate events, as shown in the figure below:
+
+![msg-dup](./img/diagram-msg-dup.drawio.png)
+
+Suppose one failure can cause two duplicate events. After n successive failures, it could cause 2 to the power of n duplicate events, which is intolerable and will cause the entire system to halt because of the flooding of duplicate events.
+
+Thankfully, this can be mitigated by inserting another field `Tag` in the outbox table. See `DB Schema` for more discussion. 
+
+![msg-dedup](./img/diagram-msg-dedup.drawio.png)
+
+By employing this change, we suppress the duplicate events at each stage to make it grow pseudo-linearly like the CDC approach.
+
+**DB Schema:**
+
+To deduplicate events, we introduce an additional outbox table to store the information on transactions. Typical practice is explained below:
+
+- Outbox Table: This table tracks the progress of the transaction. We insert an entry containing `TxID` to declare that the transaction has performed some operations on this database.
+- Data Table: This is the normal table we will write data into. If we want to implement semantic locking, we can also add `TxID` and `State` in the data table.
+
+By modifying the Outbox table and the Data table in a single transaction, only the first event will update the table successfully, and the rest will fail. However, this approach has some defects:
+
+- First, if a service has to update the same database table more than once in separate transactions, this mechanism breaks.
+- Second, as shown in the `Blind Retry`, it could lead to an exponential growth of duplicate events in certain situations.
+
+To mitigate the problem, we add two other fields: `Stage` and `Tag`, in the outbox table to differentiate duplicate events. 
+
+- `Stage`: This is a local database transaction identifier. The field differentiates two local transactions of the same database in a saga.
+- `Tag`: This is a random number. As we want to tell different events, we can use a random number by a pseudo-random number generator. Before sending a new event, our framework will assign a random number to the new event. Although there could be collisions, the chances are rare because we have already partitioned events by `TxID` and `Stage`.
+
+With this small change to the original pattern, we can safely retry and increase the idempotency of each atomic unit.
+
+The `State` in the schema is for semantic locking to improve data consistency. We leave the discussion of this field in *Discussion*.
+
+The `Timestamp` field in the outbox table helps us programmatically or automatically expire the entry after a while. The `Timestamp` field in the data table can be used to implement distributed locking.
+
+The `<Rollback>` field can be used to store rollback information like parameters and intermediate states. By keeping the rollback information in the outbox table, we dramatically decrease the size of each event. With this method, each event can only carry a tuple of `(Service, Endpoint, Stage)` in its `RollbackStack`. Along with the `TxID`, we can rollback the operation.
+
+![tx-schema](./img/diagram-tx-schema.drawio.png)
+
+**Note:** Although we use relation database as an example, the mechanism can be applied to other database as long as every single operation of it is atomic. For example, for a document DB, we can formulate the schema as below:
+
+```javascript
+{
+	outbox: [
+		{<tx1>},
+		{<tx2>},
+		...
+	],
+	data: [
+		{<entry1>},
+		{<entry2>},
+		...
+	]
+}
+```
+
+It can simultaneously update the outbox field and also the data field.
+
+**Unified representation:**
+
+To simplify the following discussion, we unify the representation of transactional messaging shown in the following figure. The transactional messages will be represented by a dotted line, followed by a solid line followed by a dotted line. The service first pulled an event from its queue. After performing some processing of the event and updating the database, it puts a new event in the queue of the next service.
+
+![tx-msg-resp](./img/diagram-tx-msg-resp.drawio.png)
 
 ## Transaction Model
 
@@ -260,292 +163,268 @@ We define the transaction model as the following to simplify the reasoning proce
 
 ### Architecture
 
+By employing an event-driven architecture, we rule out many failure cases to improve the fault tolerance of our mechanism. There are several components in this figure:
+
+- **Gateway:** It accepts requests from outside of the system. It performs asynchronously by transforming a synchronous request into an asynchronous event that is later processed by the system. After putting the event in the event queue, it immediately returns the response. The user may periodically probe the system via APIs to check the transaction's status.
+- **Event Queue:** The event queue is central to an event-driven architecture. It stores all events in event logs and also provides sharding to improve performance and event routing.
+- **Transaction Manager**: This component controls the state of the transaction. It provides the single source of truth of the transaction state. To determine if a transaction is committed or aborted, the user should quest the transaction manager.
+- **Services**: The remaining parts of the systems are made up of a set of services that provide the functionality to manipulate the underlying database. They can perform hierarchical saga transactions by coordinating with the event queue and the transaction manager. In production, each service is composed of multiple stateless instance for scalability and availability.
+
 ![architecture](./img/diagram-architecture.drawio.png) 
 
-### Assumptions
-
-- **Microservice architecture**
-  - A gateway to receive requests and return them to users.
-  - A set of services and corresponding databases, each services may have multiple instances.
-  - A coordinator, also a message broker, with a queue and control instances to dispatch events, and implement consistency requirements including distributed concurrency control.
-  - A central data store to store globally visible information that spans across multiple services (there can be several databases, but only shown one in the architecture picture), such as causality relationships.
-  - **Note**: this architecture is also a kind of *decentralized data management* as actual data do not cross the boundary of each service. The central data store only stores control information used for transactions.
-- **Event-based architecture**
-  - Asynchronous execution to reduce failure surface. If we use synchronous style, all related service must be online simultaneously.
-  - Message queue, message broker as storage and executor.
-  - Messages are only passed through synchronous method like HTTP or gRPC in the basic unit (more details later).
-  - The communication between each component is through an **event**: a set of key-value pairs, usually in the form of json, xml, or protocol buffer.
-  - **Note:** for APIs directly contacting each single service, they could either be implemented synchronously or asynchronously.
-- **Heterogeneous environment**
-  - RDB, KV store, Document DB, Time series DB, Event Store...
-  - Bare-bone machine, virtual machine, containers, ...
-- **Database Constraints**
-  - All databases are durable, i.e. once a data is **commited** to the database, it will not disappeared on failures.
-  - All local transactions performed by databases are **atomic** (*all-or-nothing* atomicity).
-  - Some database may not support transactions, but all single operation in any database are **atomic** (*all-or-nothing* and *before-or-after* atomicity). One can relax this constraints but it will cause some degree of inconsistency.
-  - **Note:** the developer **must** choose a database that support transactions or it could lead to some level of inconsistency.
-- **Default configuration**
-  - The location of the message broker, central data store (only visible to the coordinator), ...
-  - Default retry configuration, the number of instances, ... 
-
-### Requirements
-
-- Each request that utilizes this mechanism (global transaction, GT) is gauranteed to complete all of the operation. However, for read/write that happens only outside of this mechanism (local transaction, LT) may cause certain degree of inconsistency. This is reasonable in order to improve performance and prevent blocking of the database in network partition.
-- The execution time of the each request is bounded, usually within several hours.
-- Allow rollback to a certain point when facing errors. If this transaction is commited, it would not allow rollback. That is, a transaction call rollback before the commit point, or it must proceed until the end.
-  - The integration with third-party services or non-idempotent actions usually cannot rollback or it will lead to unexpected consequences.
-- Allow intervention of developer (to manipulate the state of the execution context).
-- Need the ability to deal with several types of errors
-  - Business errors: the program logic is correct, but an user performed an illegal operation.
-  - Techinical errors: the program logic is still corrects, but it will subject to the interaction between components and environments, e.g. network partition, power failure, memory killer, ...
-  - Logical errors: the program is buggy, e.g. infinite loop.
-- Prefer transparent to each service (by using agent, middleware, or application framework).
-- Prefer easier programming style.
 
 ### Execution Model
 
-- A tree of nodes starts from the root node.
+We can model hierarchical saga transactions to a tree of local transactions performed by services. Each service in a tree is composed of several atomic units called **stages**. 
 
-![tree](./img/diagram-tree.drawio.png)
+![tree](./img/diagram-hierarchy.drawio.png)
 
-- A global transaction can be composed of nonterminal or terminal transaction (local transaction).
-- A nonterminal node can be described as a sequence of terminal nodes
+An atomic unit may be a database transaction of a third-party API call. We can define an atomic unit as a block of operations that contains multiple pure functions but only a single impure function.
+
+The `demo_endpoint()` consists of 3 atomic units in the following code blocks. To achieve strong fault tolerance, we must partition them into separate stages. For optimization, see *Discussion*.
+
+```go
+func demo_endpoint() {
+	// atomic unit 1
+	pure1_1()
+	pure1_2()
+	impure1()
+	
+	// atomic unit 2
+	pure2_1()
+	pure2_2()
+	pure2_3()
+	impure2()
+	
+	// atomic unit 3
+	pure3_1()
+	impure3()
+}
+```
+
+The tree shown at the beginning of this section can be expanded into the following flat execution flow. Actually, they resemble function calls in the computer system.
 
 ![flatten](./img/diagram-flatten.drawio.png)
 
-- A terminal node can be described as a tuple of `(Service, Endpoint, Action, Stage, Input, Output, Next Service)`.
-    - `(Payment, /v1/payment, retry, 3, input {}, output {}, Order)`
-
-
 ### Execution Context
 
-- Transaction ID
-- Start Time
-- End Time (optional)
-- Current retry Time
-- Time to Live (total retry time + service time)
-- Trace stack (stages had been executed)
-- Rollback stack (compensation stages)
-    - [payment/v1/rollback, order/v2/order/rollback]
-- Next Stage (Service, Endpoint, Action, Version, Stage, Input)
-- State (`BEGIN`, `PROCESSING`, `COMMIT`, `ABORT`, `END`)
-- Action (`NONE`, `CHECKPOINT`, `ROLLBACK`, `RETRY`, `INSPECT`)
-- [custome fields ...] (optional)
+To connect different stages, we must pass execution context between them to control their behavior. We only show the required fields down below. Other fields may depend on the implementation. The meaning of each field will be detailed in *Mechanism*.
 
-```json
-{
-  "transaction_id": "TX123456789",
-  "start_time": "XXX",
-  "end_time": "YYY",
-  "retry_time": 3,
-  "ttl": 50,
-  "trace_stack": ["Payment:/v1/payment", "Order:/v1/order"],
-  "rollback_stack": ["Payment:/v1/payment/rollback", "Order:/v1/order/rollback"],
-  "next_stage": "Customer:/v1/customer:1",
-  "state": "COMMIT",
-  "action": "CHECKPOINT",
-  "input": {
-  	"...": "..."
-  },
-  "custom_config": {
-  	"...": "..."
-  }
-}
+```yaml
+TxID:  TX123456789
+Phase: PhaseProcessing
+From: PaymentService
+To: OrderService
+Endpoint: payment
+Stage: 0
+RetryTime: 3
+TTL: 50
+CallStack: ["Payment:/v1/payment", "Order:/v1/order"]
+Body:
+	- key: value
+	- ...
 ```
 
-### Execution Behavior
+## Transaction Design
 
-- The root generates a transaction id and add start time.
-- The final node make the end time.
-- A nonterminal node can mark the transaction as commit or abort, then the coordinator would do the corresponding processing.
-- Each node take the input from the context and output the next stage information including the output data
-- Each node add the stage information (Service, Endpoint, Action, Stage) to the trace stack.
-- Each node add the rollback information (Service, Endpoint, Action, Stage) to the rollback stack.
-- Each node decrease the TTL by 1 after processing.
-- If the exection failed as this stage, the retry time is decreased by 1. If success, then mark current retry time as -1.
-- If the node see the current retry time is -1, then mark the current retry time as the default retry time for that service.
-- If either TTL or retry time becomes 0, or any error occurs (rollback or cancel), the execution ends.
-
-## Mechanism
-
-In this section, we would discuss a mechanism step-by-step to deal with the possible error in the fault model in detail. 
-
-**Note:** 
-
-- In our model, the distributed transaction is implemented through event-based systems. The user will receive acknowledgement after our system has confirmed that the request is save in our data store. The request is executed asynchronously with best-effort.
-- The **central data store** is not a off-the-shelf database but a specialized database which has transaction support, read/write coherence management, and some other features. We provide a draft for such a design. We could also use a database with ACID support to provided a subset of the fault-tolerance in our context.
-
-### Fault Model
-
-This fault model mainly deals with the faults from the environments of the interactions between components. The logic error of the execution flaws are not considered. This type of error need to be addressed by the developer itself or through some verification processes like testing.
-
-There are 3 types of errors:
-
-- Business Error:
-  - This type of error is valid from the viewpoint of our systems. It can be viewed as a non-error transaction with the business rollback stage as a non-terminal node. We would not discuss this type of error in the context.
-- Technical Error:
-  - Service Failure: the service is temporarily shutdown or crashed.
-  - Network Partition: the network connection failed when communicating with another components.
-  - We are able to distinguish these two conditions because network partition usually result in timeout error rather than not-found error. We mainly deal with this type of error in our system.
-- Logical Error:
-  - The most notable error in this category is programming bugs like infinite loop.
-  - This type of error is only mentioned a little bit during our discussion.
-
-### Basic Unit
-
-We can decompose the operation sequence into basic units, made up of sender and receiver. We deal with communication error in this section and assume that each side has the ability to deal with errors. There are 4 possibilities that the basic unit can fail.
-
-![basic](./img/diagram-basic.drawio.png)
-
-**Normal Operation:** The sender first does some works and then send a message to the receiver. The receiver processed the event and sends a response back to the sender.
-
-(1) The sender fails to process the event before the message is sent to the receiver. The sender have to design its own mechanism to handle the error while retrying the request.
-
-(2) While the communication breaks (either each side failed or network partition), it behaves like (1). Just retry.
-
-(3) The receiver receives the message but the processing failed in the middle. In this case, the receiver must save the state of processing (if not idempotent) in terms of the next retry request.
-
-(4) The processing completes but the acknowledgement fails in the response (either each side failed or network partition). It behaves like (3). However, the request is already completed. The receiver must design a mechanism to deal with duplicate request.
-
-By formulating these type of request, we can simplify our reasoning in the following section.
-
-**Note:** The only difference between the two paragraph is that the event is pushed or pulled from the source. The fault-tolerance mechanism is actually equivalent.
+A transaction can be divided into a combination of the following phases: a prepare phase and a sequence of mixed control and data phases.
 
 ### Prepare Phase
 
-There must always be a prepare phase before the start of a transaction. This phase conduct some works to enable failure recovery. In theory, this phase can combine with the *Begin Phase* but it will complicate the handling so we decide to separate them to two different stages.
+In the prepare phase, the user sends a request to the gateway and asks to perform a transaction. The gateway transforms the request into an event and sends it to the event queue. After that, the gateway immediately returns to the user. On failures, we can retry and send duplicate events. They will be deduplicated by the transaction manager.
 
-![prepare](./img/diagram-prepare.drawio.png)
+![tx-prepare](./img/diagram-tx-prepare.drawio.png)
 
-**Normal Operation:** When a service endpoint receive a request, it first issues a local transaction to store the needed information in the local database. Then it directly sends acknowledgement back to the user. The background thread of the service will periodically pull the local database and send a `BEGIN` event with necessary transaction information (see *Execution Context* in the section *Transaction Model*) to the message queue that can be retrieved by the executor.
+**Note:** This is not a "real" phase, but we can still separate it into a single phase to make the distinction between other formal phases.
 
-(1), (2) The service issues a transaction to save the necessary information (indexed by transaction ID). Since it leverage the local transaction, it is safe to retry the transaction on failures. In these steps, we just retry the same operation until success. Usually, this kind of operation is implemented either using read-then-insert or directly upsert command. We can handle the error message (if the entry exists) and then just return success.
+### Control Phase
 
-(3) The background thread fetchs all unsent events from the local database, marks them with `BEGIN` state and put them in the message queues. In production, there will be several instances that doing the same things. To prevent race condition, which leads to duplicate messages, we put the deduplication mechanism at the begin phase.
+The control phase consists of three sub-phase: begin, processing, and end. The service sends an event when it needs to modify the state of the transaction: commit, abort, or end. 
 
-(4), (5) As each put in the message queue is atomic, just like transactions, we can treat (4), (5) as a whole. Just retry putting the event.
+- **Begin:** 
+	- This notifies the transaction manager to start a transaction by marking the state as `InProgress`. The TxManager registers an entry in the corresponding DB and then sends an event to the starting service.
+- **Processing:** 
+	- **Commit:** This moves the state of the transaction from `InProgress` to `Committed`. When a transaction entre this phase, it can never be rollbacked.
+	- **Abort:** This event marks the state of the transaction from `InProgress` to `Aborted`. However, if the transaction has been committed, this operation will have no effect. Also, the TxManager sends rollback events to stages needed to be rollbacked. We will discuss this action in detail in the `Discussion`.
+- **End:**
+	- This signifies the end of a transaction. The TxManager moves the state of the transaction from `InProgress` to `Complete`. Any operation after the end phase will be ignored.
 
-(6) After the event is sent to the message queue, the service marks the state of the transaction as complete. We can implement by directly delete this entry or just marked it as complete. If we implement removing strategy and we receive an error when removing a non-exist entry, we know that this is an duplicate event and can just ignore it. If (6) failed, then it will lead to duplicate events. We leave this problem to *Begin Phase*.
+![tx-ctrl](./img/diagram-tx-ctrl.drawio.png)
 
-**Example:** After the user pays the order, the third-party service will send a request through the given callback, and it will stop sending until we acknowledge that we have already received it. The service first save all the needed information in the local database so that the next time the user request relevant information (like the status of the order), they can see the needed information. If something fails during this process, since the service has yet acknowledge to the third-party service, it is safe to retry this operation. 
+### Data Phase
 
+The data phase expresses what happened in each service stage. The service pulls events from its event queue and then dispatches the event based on the endpoint and the stage according to the event processing function. After processing, the dispatcher sends a new event to the event queue of the next service. The event routing can be done nearly transparently. The service stages only need to specify the destination, and the framework will help manage the `CallStack` and the `RollbackStack`. This will be discussed in detail in the `Control Mechanism`.
 
-### Begin Phase
+![tx-data](./img/diagram-tx-data.drawio.png)
 
-In this phase, our mission is to deduplicate the same messages and coordinate the conflicting events that may have causality relationships.
+## Control Mechanism
 
-![begin](./img/diagram-begin.drawio.png)
+In the `Transaction Design`, we describe several phases in a transaction. They are not enough. We also have to specify the control mechanism between different services.
 
-**Normal Operation:** The executor read an event from the message queue. If the event is a `BEGIN` event, then it create a new entry in the transaction manager (issue a transaction). The transaction manager will asynchronously examine the causality relationships and allocate a ticket of execution to that entry. The executor then acknowledges the message. When in this ticket turn, the transaction manager sends an event to the message queue. 
+### Control Endpoints vs Data Endpoints
 
-(1) The executor pulls an event from the message queue. On failures, just retry.
+We first introduce the concept of control endpoints and data endpoints. In previous works, many saga orchestrators are implemented by instances of classes. To achieve fault tolerance, the instances are stored in the database by some persistence frameworks. Although this method works well, it has two drawbacks:
 
-(2), (3) The executor issues a transaction to the transaction manager. The transaction manager creates a new entry, asynchronously resolves the causality relationship, and return the response to the executor. If the transaction manager fails, since it implements atomic operation, it is safe to retry. If the executor fails or communication link breaks, because our use of transaction, it is also safe. In terms of duplicate events, if the executor finds an existing entry in the transaction manager (transaction ID, error messages from the transaction manager), it removes the event (by simply acknowledgement) from the message queue. As each opeartion in the transaction manager is atomic, this operation is correct.
+- First, not all languages implement the such framework. Our goal is to design a general mechanism for hierarchical saga transactions.
+- Second, it could be more intuitive when using a static instance to control the execution flow. 
 
+To address these issues, we came up with the concept of control endpoints and data endpoints, which is explained as follows:
 
-(4) The executor acknowledges the event and remove it. If this operation fails, by (3), it can just retry.
+- **Control Endpoints:** Each transaction only has a single control endpoint, which is capable of performing control phases, including commit, abort, and end. The endpoint **IS** aware of the state of the transaction.
+- **Data Endpoints:** Each transaction has multiple data endpoints. They are made up of normal functions data processing functions. They are **NOT** aware of the state of the transaction. They are still partially aware of the transaction because they still need to insert the rollback stages onto the `RollbackStack`.
 
-(5), (6) In the ticket turn, the transaction manager will send an event (`PROCESSING` state) to the message queue. If this fails, because the message queue support atomic operation, it can simply retry.
+The data endpoints are just normal functions chained by several stages. We can use the data endpoints as usual by removing the transaction manager. (The functionality of `RollbackStack` is ignored.)
 
+### Stack Behavior
 
-### Processing Phase
+- **CallStack:** The framework automatically pushes the next stage of the current endpoint to the stack. It may use tail-code optimization to skip the last stage. However, it is not recommended and not flexible enough. Usually, the endpoint will do something cleanup or marshaling before returning.
+- **RollbackStack:** It is the developers' responsibility to push the given information 
+Like function stacks, the framework pushes the next stage of the current endpoint to the `RollbackStack`. 
 
-After the *Begin Phase*, the transaction enters a chain of *Processing Phase*. 
+### Demo Example
 
-**Note:** The *Local Database* here may be any non-idempotent external service, including a database or a third-party API. We just illustrate it as a database for convenience.
+Now, let's look at a fictitious example. The root service is the PaymentService. The PaymentService control endpoint has 4 (3 + 1 commit) stages:
 
-![processing](./img/diagram-processing.drawio.png)
+1. Call an endpoint of the OrderService.
+2. Commit the transaction (send to the TxManager.)
+3. Call another endpoint of the PaymentService.
+4. End the transaction (send to the TxManager.)
 
-**Normal Operation:** The executor pull an event from the message queue and then issues a transaction to the transaction manager to deduplicate the event (see *Discussion* for more description). If the event is in `PROCESSING` state, then the executor sends a request based on the given endpoint. After the virtual service completes the operation, the executor first composes a new event and sends it to the message queue and then acknowledge the old one.
+The transaction execution flow is constructed recursively, which is shown in the figure below:
 
-(1) The executor failed to pull an event from the message queue (or failed before (2)). It can just retry. 
+![tx-demo](./img/diagram-tx-demo.drawio.png)
 
-(2), (3) To deal with the duplicate retry, we consult the transaction manager. The transaction manager will only allow a single event for every operation stage. Basically, it uses a 3-tuple (`TXID`, `Stage`, `NONCE`) to deduplicate events. See *Discussion* for detailed reasoning of this method.
+### Zoom in on the control endpoint
 
-(4) The communication link failed between executor and virtual service before making any permanent change. Like (1), just retry.
+Next, we zoom in on the control endpoint of the PaymentService.
 
-(5), (6) Because of the local transaction, the virtual service is safe to retry.
+1. After the TxManager starts the transaction, it redirects the events to the starting service provided by the initial event sent by the gateway.
+2. The PaymentService dispatches the event to the first stage of the control endpoint. The stage processes the event and sends the event to the OrderService at the end.
+3. After the OrderService completes all the responsibility to update the order status (including all child endpoints), it returns based on the top of the `CallStack` (that is, the next stage of the PaymentService control endpoint).
+4. The second stage determines to commit the transaction when the order status is updated. Therefore, it sends an event to the TxManager at this stage.
+5. The TxManager returns to the next stage by popping the stack.
+6. The control endpoint next wants to create a new payment. Therefore, it calls a data endpoint to achieve this behavior.
+7. After the data endpoint of the PaymentService completes the requirement, it returns to the last stage of the control endpoint.
+8. As all operations in the control endpoint are complete, it ends the transaction.
 
-(7) The virutal service failed to send the response back to the executor due to some failures. As the change is commited, it could either retry the entire operation or rollback. We decide to retry and entire operation and perform deduplication. Please see (2).
+![payment-ctrl](./img/diagram-payment-ctrl.drawio.png)
 
-(8) This situation is similar to (7) because both components are stateless. If the new event is sent but the old one is failed, it doesn't matter as we are safe to retry the request. Another possibility is that no event had been sent because of failures of the executor. In both cases, we have to add some additional tags to help deduplicate events. We achieve this by incrementing the `STAGE` and generate a `NONCE` using a random number generator in the message metadata. These fields can help the transaction manager to deduplicate the events. See (2).
+**Note:** Each stage in this example may seem boring, however, they can perform complex data transaformation as long as each stage contains only one impure operation.
 
-**Note:** the *virtual service* here means a logical unit that has only one local transaction. If an endpoint originally initiates many non-idempotent changes, including a local transaction, a non-reversible third-party API, and the like, it should divide them into multiple virtual services. This could be implemented using application framework. See *Simulation* for more description.
+### The Big Picture
 
-### Commit Phase
+Finally, we assemble all components together. We show the flow of events in the figure. The diamond with the same color represents the same stage. We also carefully fill the color so that it represents a one-to-one mapping in the demo example.
 
-The *Commit Phase*  is similar to the *Processing Phase*. The only difference is that when seeing a `COMMIT` state and `CHECKPOINT` action in the metadata (see *Execution Context*), it will release the locks of the transaction manager (see *Discussion*).
+![demo](./img/diagram-demo-commit.drawio.png)
 
-![commit](./img/diagram-commit.drawio.png)
+**Note:** The abort case is similar to the commit one. The difference is that after sending an abort event to the TxManager. The TxManager can gradually rollback an endpoint one at a time or do it concurrently. It is now the responsibility of the TxManager to do the rollback. Fortunately, the procedure is similar to what we did before. We construct events and send them to their event queues. As mentioned earlier, each endpoint should be idempotent, so it is safe to send duplicate events if the TxManager fails the first time. However, if the TxManager wants to track the completion of each event, it may implement distributed wait group. We propose a draft in the *Discussion*.
 
-**Normal Operation:** The basic operation is the same as the *Processing Phase*. However, if the state is `COMMIT` and the action is `CHECKPOINT`, the executor will clean up the resources (equivalent to release the lock) before the commit point at the beginning of the **NEXT** stage along with the deduplication process. 
+## Implementation
 
+We implement the simulation program using the example in the `Control Mechanism`.
 
-(1), (4), (5), (6), (7), (8) See the *Processing Phase*.
+### Event
 
-(2), (3) Beside deduplication process, the transaction manager is informed to clean up the resources before the commit point. With local transaction, we are safe to retry this operation. Also, the transaction manager also stores the latest commit point so if the duplicate transaction arrives, it can return an error message so that the executor can safely discard this event.
+The field in an event is basically what we have seen in the execution context. 
 
-**Note:** 
-
-- When to commit? The commits points are marked by the **control endpoint**, which is actually the first endpoint. The initial endpoint is not only an entry point of the transaction, but also serves as the control of the service request and response. See *Discussion* for more information.
-- There are many other actions that can happen in the commit stage:
-  - When the action is `NONE`, it only signifies the transaction is committed.
-  - When the action is `ROLLBACK`, which means the normal operations suffers from severe failures. The coordinator then starts rollback until the previous commit point.
-  - When the action is `RETRY`, just retry this operation. (Can simply discard the response and let the entire operation pulled from the message queue.)
-
-### Abort Phase
-
-The *Abort Phase* is similar to both *Processing Phase* and *Commit Phase*. If a user issues a request that forces the transaction to stop, then it could abort the transaction and reverses all the change. After rollback operations, the transaction will go to the *End Phase*.
-
-**Note:** The abort operation can happen due to programming error programming errors (like infinite loop) or explicit abort request from the user. The former one is contained in the metadata of each event and the latter one is stored in the transaction manager. If the executor see such abort flag in the transaction manager, it can abort the operation. 
-![abort](./img/diagram-abort.drawio.png)
-
-**Normal Operation:** The basic operation is the same as the *Processing Phase*. However, if the state is `ABORT`, or the flag is turned on at the beginning of the **NEXT** stage, the executor starts the rollback procedure. It first pops the top of the `rollback_stack` and set the next stage to the rollback endpoint. On each rollback stage completion, it pops another entry in the stack until the stack is empty. This is just like what the *Processing Phase* does but with the stage endpoint subsituted by the rollback endpoint. When the stack is empty, the executor set the state to `END` and enters the *End Phase*.
-
-(1), (2), (3), (4), (5), (7) See the *Processing Phase*.
-
-(6) If the background thread had not updated the status of the event, it fine. It simply waits for the next round. If the checking failed, because this component is stateless, just retry.
-
-**Note:** If the event has been commited, even if the transaction shows the as `ABORT`. To explicitly kill the transaction (which is issued by the administrator), the central data store must show the state as `KILLED` rather than `ABORT`.
-
-### End Phase
-
-Just before the transaction end, there will be an `END` event sent by the last service. The coordinator will clean up the resource and complete the transaction when encounter this type of event.
-
-![end](./img/diagram-end.drawio.png)
-
-**Normal Operation:** The coordinator pulls an event from the message queue and find that this is an `END` event. It issues a cleanup request to the central data store to free allocated resources and then also cleanup the event in the message queue.
-
-(1) The coordinator failed to pull the event from the message queue. This case has no effect, and the coordinator will keep pulling until success.
-
-(2) The cleanup event is lost during the communication. It behave like (1), just retry as the coordinator only maintain no state in memory and is idempotent.
-
-(3) The cleanup response is lost. The coordinator will retry the clean up request. Once success, it will receive an not-exist error message in response. The coordinator thus knows that the resources had already been cleaned up and proceeds to acknowledge the event.
-
-(4) The communication breaks when transmitting the acknowledge message. It just behaves like (3) and retry until the event is acknowledged and removed from the queue.
-
-
-## Simulation
-
-### Implementation
+- `From`: the name of the sending service.
+- `To`: the name of the receiving service.
+- `Endpoint`: the name of the endpoint of a service
+- `Stage`: the stage number of an endpoint
+- `Phase`: record the phase of the transaction
+- `State`: record the state of the transaction
+- `Round`: used for simulation
+- `CallStack`: store service return information
+- `RollbackStack`: store the rollback stage information
+- `Body`: store parameters for the next stage.
 
 ```go
-type Payment struct {
-    
+type Event struct {
+	TxID               string
+	From               string
+	To                 string
+	Endpoint           string
+	Stage              int
+	Phase              Phase
+	State              State
+	CurrentRetryTime   int
+	RemainingRetryTime int
+	Round              int
+	CallStack          []string
+	RollbackStack      []string
+	Body               map[string]interface{}
 }
 ```
 
+Besides the struct, `Event` also provides a set of methods. We list some important ones:
+
 ```go
-type Order struct {
-    
+func (e *Event) PushCallStack(srv, endpoint string, stage int) {
+	e.CallStack = append(e.CallStack, fmt.Sprintf("%s|%s|%d", srv, endpoint, stage))
+}
+
+func (e *Event) Commit() {
+	e.PushCallStack(e.To, e.Endpoint, e.Stage+1)
+	e.State = StateCommit
+	e.To = ServiceTxManager
+	e.Endpoint = ""
+	e.Stage = 0
+}
+
+func (e *Event) Abort() {
+	e.PushCallStack(e.To, e.Endpoint, e.Stage+1)
+	e.State = StateAbort
+	e.To = ServiceTxManager
+	e.Endpoint = ""
+	e.Stage = 0
+}
+
+func (e *Event) End() {
+	e.Phase = PhaseEnd
+	e.State = StateNone
+	e.To = ServiceTxManager
+	e.Endpoint = ""
+	e.Stage = 0
+}
+
+func (e *Event) Rollback() (Event, bool) {
+	newEvent := NewEvent()
+	newEvent.TxID = e.TxID
+	newEvent.Round = e.Round
+	dest, ok := e.PopRollbackStack()
+	// no more stack -> done!
+	if !ok {
+		return Event{}, false
+	}
+	srv, endpoint, stage := ParseDestination(dest)
+	newEvent.Phase = PhaseRollback
+	newEvent.To = srv
+	newEvent.Endpoint = endpoint
+	newEvent.Stage, _ = strconv.Atoi(stage)
+	return newEvent, true
+}
+
+func (e *Event) Return() {
+	dest, ok := e.PopCallStack()
+	// no more stack -> tx manager
+	if !ok {
+		e.End()
+		return
+	}
+	srv, endpoint, stage := ParseDestination(dest)
+	e.To = srv
+	e.Endpoint = endpoint
+	e.Stage, _ = strconv.Atoi(stage)
 }
 ```
 
-```go
-type Customer struct {
-    
-}
-```
+### Event Queue
+
+
+### Event Dispatcher
+
+
+
 
 ### More Realistic Architecture
 
